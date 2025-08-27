@@ -10,22 +10,26 @@ import select
 import ctypes
 import ctypes.util
 from typing import Optional
-from packet_utils import make_packet, make_lpa_packet, parse_multiple_packets
+from packet_utils import make_packet, parse_multiple_packets
 
 
 class AxonIPCDriver:
-    """AXON IPC 드라이버 클래스 (C 코드와 동일한 패킷 구조)"""
+    """AXON IPC 드라이버 클래스"""
     
-    def __init__(self, device_path: str):
+    def __init__(self, device_path: str, can_id: int = 0x185, is_extended: bool = False):
         """
-        IPC 드라이버 초기화
+        초기화
         
         Args:
-            device_path: IPC 디바이스 파일 경로
+            device_path: IPC 디바이스 경로
+            can_id: CAN ID (기본값: 0x185)
+            is_extended: Extended ID 여부 (기본값: False = Standard ID)
         """
         self.device_path = device_path
         self.fd = None
         self.is_open = False
+        self.can_id = can_id
+        self.is_extended = is_extended
         
     def check_device_exists(self) -> bool:
         """디바이스 파일이 존재하는지 확인"""
@@ -145,10 +149,6 @@ class AxonIPCDriver:
     def make_packet(self, seq_num: int, cmd1: int, cmd2: int, data_length: int) -> bytes:
         """C 코드와 동일한 패킷 생성"""
         return make_packet(seq_num, cmd1, cmd2, data_length)
-    
-    def make_lpa_packet(self, data: bytes, cmd: int, port: int, length: int) -> bytes:
-        """C 코드와 동일한 LPA 패킷 생성"""
-        return make_lpa_packet(data, cmd, port, length)
     
     def parse_packets(self, data: bytes) -> list:
         """여러 패킷 파싱"""

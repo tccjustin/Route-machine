@@ -13,7 +13,6 @@ from test_functions import (
     test_can_packet_send,
     test_can_packet_send_with_timing,
     test_can_packet_continuous_send,
-    test_can_multiprocessing,
     test_can_multithreading
 )
 
