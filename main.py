@@ -5,14 +5,6 @@ AXON IPC 드라이버 Python 메인 실행 파일 (정리된 버전)
 """
 
 from test_functions import (
-    test_linux_time_counting,
-    test_linux_time_precision_counting,
-    test_linux_time_with_ipc_counting,
-    test_linux_time_visual_counting,
-    test_linux_native_timing,
-    test_can_packet_send,
-    test_can_packet_send_with_timing,
-    test_can_packet_continuous_send,
     test_can_multithreading
 )
 
