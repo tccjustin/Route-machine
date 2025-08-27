@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AXON IPC 드라이버 Python 메인 실행 파일
+AXON IPC 드라이버 Python 메인 실행 파일 (정리된 버전)
 """
 
-from device_manager import check_devices
-from test_functions import test_can_command, clean_interrupt_monitoring
+from test_functions import (
+    test_linux_time_counting,
+    test_linux_time_precision_counting,
+    test_linux_time_with_ipc_counting,
+    test_linux_time_visual_counting,
+    test_linux_native_timing,
+    test_can_packet_send,
+    test_can_packet_send_with_timing,
+    test_can_packet_continuous_send,
+    test_can_multiprocessing,
+    test_can_multithreading
+)
 
 def main():
-    """메인 함수"""
-    print("AXON IPC 드라이버 Python 테스트 (C 코드와 동일한 패킷 구조)")
     
-    # 디바이스 상태 확인
-    check_devices()
-    test_can_command()
-    # 간단한 모니터링만 실행
-    print("\n=== 간단한 IPC 모니터링 시작 ===")
-    clean_interrupt_monitoring()
+    # 멀티스레딩 CAN 송신/수신 테스트 실행
+    print("\n멀티스레딩 CAN 송신/수신 테스트를 시작합니다...")
+    test_can_multithreading()
     
-    print("\n모든 테스트 완료!")
+    print("\n테스트 완료!")
 
 if __name__ == "__main__":
     main()
