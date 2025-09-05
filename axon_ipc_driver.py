@@ -81,6 +81,15 @@ class AxonIPCDriver:
             print(f"IPC 디바이스 닫기 실패: {e}")
         return False
     
+    def close(self) -> bool:
+        """
+        IPC 디바이스 닫기 (close_device의 별칭)
+        
+        Returns:
+            bool: 성공 여부
+        """
+        return self.close_device()
+    
     def reopen_device(self) -> bool:
         """
         디바이스 재연결 (닫고 다시 열기)
@@ -109,7 +118,6 @@ class AxonIPCDriver:
                 return -1
             
             bytes_written = os.write(self.fd, data)
-            print(f"데이터 쓰기 성공: {bytes_written} 바이트")
             return bytes_written
             
         except Exception as e:

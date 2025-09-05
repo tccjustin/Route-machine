@@ -66,6 +66,11 @@ def build_CANHeader_py(timestamp_onoff: int,uCAN_ID: int, uFDF: int, uIDE: int, 
     """
     can_header_frame = 0
 
+    if uCAN_ID > 0x7FF:
+        uIDE = 1
+    else:
+        uIDE = 0
+
     if uIDE == 1:  # Extended ID
         if uFDF == 1:  # CAN FD
             can_header_frame = TIMESTAMP(timestamp_onoff) + PROTOCOL(0) + CANEXTID(uCAN_ID) + FDF(1)  + RTR(0) + IDE(1) + BRS(uBRS)
@@ -169,8 +174,8 @@ def make_lpa_packet_with_can_header(data: bytes, can_id: int, is_extended: bool 
     Returns:
         bytes: 생성된 LPA 패킷
     """
-    if len(data) > 8:
-        raise ValueError("CAN 데이터는 최대 8바이트여야 합니다")
+#    if len(data) > 8:
+#        raise ValueError("CAN 데이터는 최대 8바이트여야 합니다")
     
     # CAN 헤더 생성 (5바이트)
     # can_header = build_can_header(can_id, is_extended)
@@ -262,6 +267,145 @@ def make_lpa_packet(ipc_buff: bytes, ipc_cmd1: int, ipc_cmd2: int, data_length: 
     return bytes(packet)
 
 
+def parse_lpa_packet_with_can_header(packet_data: bytes):
+    """
+    make_lpa_packet_with_can_header로 생성된 패킷을 파싱하여 실제 payload 추출
+    
+    Args:
+        packet_data: 수신된 패킷 데이터
+        
+    Returns:
+        dict: 파싱된 정보
+        {
+            'valid': bool,           # 패킷 유효성
+            'cmd': int,              # IPC 명령어
+            'port': int,             # 포트 번호
+            'can_header': bytes,     # CAN 헤더 (5바이트)
+            'payload': bytes,        # 실제 CAN 데이터 (payload)
+            'crc': int,              # CRC 값
+            'crc_valid': bool        # CRC 검증 결과
+        }
+    """
+    result = {
+        'valid': False,
+        'cmd': 0,
+        'port': 0,
+        'can_header': b'',
+        'payload': b'',
+        'crc': 0,
+        'crc_valid': False
+    }
+    
+    # 최소 패킷 크기 확인 (IPC 헤더 3 + 명령어 4 + 데이터길이 2 + CAN헤더 5 + CRC 2 = 16바이트)
+    if len(packet_data) < 16:
+        return result
+    
+    # IPC 헤더 확인 (0xFF 0x55 0xAA)
+    if packet_data[0:3] != b'\xff\x55\xaa':
+        return result
+    
+    # 명령어와 포트 추출
+    cmd = (packet_data[3] << 8) | packet_data[4]
+    port = (packet_data[5] << 8) | packet_data[6]
+    data_length = (packet_data[7] << 8) | packet_data[8]
+    
+    # 전체 패킷 크기 확인
+    expected_packet_size = 11 + data_length  # 헤더(3) + 명령어(4) + 데이터길이(2) + 데이터(data_length) + CRC(2)
+    if len(packet_data) < expected_packet_size:
+        return result
+    
+    # CAN 헤더 추출 (5바이트)
+    can_header = packet_data[9:14]
+    
+    # 실제 payload 추출 (CAN 헤더 이후부터 CRC 이전까지)
+    payload_length = data_length - 5  # 전체 데이터 길이에서 CAN 헤더(5바이트) 제외
+    if payload_length > 0:
+        payload = packet_data[14:14 + payload_length]
+    else:
+        payload = b''
+    
+    # CRC 추출 및 검증
+    received_crc = (packet_data[-2] << 8) | packet_data[-1]
+    calculated_crc = calc_crc16(packet_data[:-2], 0)
+    crc_valid = (received_crc == calculated_crc)
+    
+    result.update({
+        'valid': True,
+        'cmd': cmd,
+        'port': port,
+        'can_header': can_header,
+        'payload': payload,
+        'crc': received_crc,
+        'crc_valid': crc_valid
+    })
+    
+    return result
+
+
+def parse_can_header(can_header: bytes):
+    """
+    CAN 헤더(5바이트)를 파싱하여 CAN 정보 추출
+    
+    Args:
+        can_header: 5바이트 CAN 헤더
+        
+    Returns:
+        dict: CAN 헤더 정보
+        {
+            'timestamp': bool,       # 타임스탬프 비트
+            'protocol': int,         # 프로토콜 (0=CAN)
+            'can_id': int,           # CAN ID
+            'is_extended': bool,     # Extended ID 여부
+            'is_fd': bool,          # CAN FD 여부
+            'rtr': bool,            # RTR 비트
+            'brs': bool             # BRS 비트 (CAN FD)
+        }
+    """
+    result = {
+        'timestamp': False,
+        'protocol': 0,
+        'can_id': 0,
+        'is_extended': False,
+        'is_fd': False,
+        'rtr': False,
+        'brs': False
+    }
+    
+    if len(can_header) != 5:
+        return result
+    
+    # 5바이트를 64비트 정수로 변환 (리틀엔디언)
+    header_value = int.from_bytes(can_header, byteorder='little')
+    
+    # 비트 필드 추출
+    result['timestamp'] = bool(header_value & 0x1)
+    result['protocol'] = (header_value >> 6) & 0x1
+    
+    # IDE 비트 확인 (Extended ID 여부)
+    ide_bit = (header_value >> 38) & 0x1
+    result['is_extended'] = bool(ide_bit)
+    
+    # FDF 비트 확인 (CAN FD 여부)
+    fdf_bit = (header_value >> 36) & 0x1
+    result['is_fd'] = bool(fdf_bit)
+    
+    # RTR 비트
+    result['rtr'] = bool((header_value >> 37) & 0x1)
+    
+    # BRS 비트 (CAN FD에서만 사용)
+    result['brs'] = bool((header_value >> 39) & 0x1)
+    
+    # CAN ID 추출
+    if result['is_extended']:
+        # Extended ID (29비트)
+        result['can_id'] = (header_value >> 7) & 0x1FFFFFFF
+    else:
+        # Standard ID (11비트)
+        result['can_id'] = (header_value >> 7) & 0x7FF
+    
+    return result
+
+
 def parse_multiple_packets(data: bytes):
     """여러 IPC 패킷을 분리하여 개별 처리"""
     print(f"\n  === 여러 패킷 분석 ===")
@@ -304,16 +448,30 @@ def parse_multiple_packets(data: bytes):
         packet_data = data[offset:offset + packet_size]
         print(f"    전체 패킷: {packet_data.hex()}")
         
-        # 실제 데이터 추출 (헤더와 CRC 제외)
-        if data_len > 0:
-            actual_data = packet_data[9:9 + data_len]
-            print(f"    실제 데이터: {actual_data.hex()}")
+        # LPA 패킷 파싱 시도
+        parsed = parse_lpa_packet_with_can_header(packet_data)
+        if parsed['valid']:
+            print(f"    ✓ LPA 패킷 파싱 성공!")
+            print(f"    CMD: 0x{parsed['cmd']:04x}, Port: {parsed['port']}")
+            print(f"    CAN 헤더: {parsed['can_header'].hex()}")
+            print(f"    Payload: {parsed['payload'].hex()}")
+            print(f"    CRC: 0x{parsed['crc']:04x} ({'유효' if parsed['crc_valid'] else '무효'})")
             
-            # 원본 데이터와 비교
-            if actual_data == b'\x22\xbe\x2a\x3e\x85\x0f\x00\x00\x00\x00\x00':
-                print(f"    ✓ 원본 데이터와 일치!")
-            else:
-                print(f"    ⚠ 원본 데이터와 다름")
+            # CAN 헤더 상세 파싱
+            can_info = parse_can_header(parsed['can_header'])
+            print(f"    CAN ID: 0x{can_info['can_id']:X} ({'Extended' if can_info['is_extended'] else 'Standard'})")
+            print(f"    CAN FD: {can_info['is_fd']}, RTR: {can_info['rtr']}, BRS: {can_info['brs']}")
+        else:
+            # 기존 방식으로 파싱
+            if data_len > 0:
+                actual_data = packet_data[9:9 + data_len]
+                print(f"    실제 데이터: {actual_data.hex()}")
+                
+                # 원본 데이터와 비교
+                if actual_data == b'\x22\xbe\x2a\x3e\x85\x0f\x00\x00\x00\x00\x00':
+                    print(f"    ✓ 원본 데이터와 일치!")
+                else:
+                    print(f"    ⚠ 원본 데이터와 다름")
         
         # CRC 확인
         if packet_size >= 11:
