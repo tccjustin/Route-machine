@@ -297,6 +297,9 @@ def parse_lpa_packet_with_can_header(packet_data: bytes):
     }
     
     # 최소 패킷 크기 확인 (IPC 헤더 3 + 명령어 4 + 데이터길이 2 + CAN헤더 5 + CRC 2 = 16바이트)
+    # 최소 패킷 크기 확인 (IPC 헤더 3 + 명령어 4 + 데이터길이 2 + Timestamp 15 바이트 + CAN헤더 5 + CRC 2 = 16바이트)
+
+
     if len(packet_data) < 16:
         return result
     
@@ -315,12 +318,13 @@ def parse_lpa_packet_with_can_header(packet_data: bytes):
         return result
     
     # CAN 헤더 추출 (5바이트)
-    can_header = packet_data[9:14]
+    can_header = packet_data[9:24]
+
     
     # 실제 payload 추출 (CAN 헤더 이후부터 CRC 이전까지)
-    payload_length = data_length - 5  # 전체 데이터 길이에서 CAN 헤더(5바이트) 제외
+    payload_length = data_length - 15   # 전체 데이터 길이에서 CAN 헤더(5바이트) 제외
     if payload_length > 0:
-        payload = packet_data[14:14 + payload_length]
+        payload = packet_data[24:24 + payload_length]
     else:
         payload = b''
     
@@ -342,66 +346,119 @@ def parse_lpa_packet_with_can_header(packet_data: bytes):
     return result
 
 
-def parse_can_header(can_header: bytes):
+def parse_can_header(buffer: bytes):
     """
-    CAN 헤더(5바이트)를 파싱하여 CAN 정보 추출
+    수신 프레임 헤더(15바이트)를 파싱하여 수신 정보 추출
     
     Args:
-        can_header: 5바이트 CAN 헤더
+        buffer: 15바이트 수신 프레임 헤더
         
     Returns:
-        dict: CAN 헤더 정보
+        dict: 수신 프레임 정보
         {
-            'timestamp': bool,       # 타임스탬프 비트
-            'protocol': int,         # 프로토콜 (0=CAN)
-            'can_id': int,           # CAN ID
-            'is_extended': bool,     # Extended ID 여부
-            'is_fd': bool,          # CAN FD 여부
-            'rtr': bool,            # RTR 비트
-            'brs': bool             # BRS 비트 (CAN FD)
+            'frame_type': int,           # 프레임 타입 (0 또는 1)
+            'source_port': int,          # 소스 포트 번호
+            'timestamp_ns': int,         # 나노초 타임스탬프
+            'timestamp_us_l': int,       # 마이크로초 타임스탬프 (하위 32비트)
+            'timestamp_us_h': int,       # 마이크로초 타임스탬프 (상위 32비트)
+            'protocol_type': int,        # 프로토콜 타입 (0 또는 1)
+            'can_id': int,              # CAN ID (Standard)
+            'lin_id': int,              # LIN ID
+            'ext_can_id': int,          # Extended CAN ID
+            'fdf': int,                 # FDF 비트 (0 또는 1)
+            'rtr': int,                 # RTR 비트 (0 또는 1)
+            'ide': int,                 # IDE 비트 (0 또는 1)
+            'is_extended': bool,        # Extended ID 여부
+            'is_fd': bool,             # CAN FD 여부
+            'is_remote': bool           # RTR 여부
         }
     """
     result = {
-        'timestamp': False,
-        'protocol': 0,
+        'frame_type': 0,
+        'source_port': 0,
+        'timestamp_ns': 0,
+        'timestamp_us_l': 0,
+        'timestamp_us_h': 0,
+        'protocol_type': 0,
         'can_id': 0,
+        'lin_id': 0,
+        'ext_can_id': 0,
+        'fdf': 0,
+        'rtr': 0,
+        'ide': 0,
         'is_extended': False,
         'is_fd': False,
-        'rtr': False,
-        'brs': False
+        'is_remote': False
     }
     
-    if len(can_header) != 5:
+    if len(buffer) < 15:
         return result
     
-    # 5바이트를 64비트 정수로 변환 (리틀엔디언)
-    header_value = int.from_bytes(can_header, byteorder='little')
+    # C 코드와 동일한 비트 연산으로 파싱
+    # rx_frame_type = buffer[0] & 0x01U;
+    result['frame_type'] = buffer[0] & 0x01
     
-    # 비트 필드 추출
-    result['timestamp'] = bool(header_value & 0x1)
-    result['protocol'] = (header_value >> 6) & 0x1
+    # rx_sourcePort = ((buffer[0] & 0xFEU) >> 1U) + ((buffer[1] & 0x01U) << 7U);
+    result['source_port'] = ((buffer[0] & 0xFE) >> 1) + ((buffer[1] & 0x01) << 7)
     
-    # IDE 비트 확인 (Extended ID 여부)
-    ide_bit = (header_value >> 38) & 0x1
-    result['is_extended'] = bool(ide_bit)
+    # rx_timeStamp_ns = (((uint16)buffer[1] & 0xFEU) >> 1U);
+    # rx_timeStamp_ns |= (((uint16)buffer[2] & 0x01U) << 7U);
+    # rx_timeStamp_ns *= 10U;
+    result['timestamp_ns'] = (((buffer[1] & 0xFE) >> 1) | ((buffer[2] & 0x01) << 7)) * 10
     
-    # FDF 비트 확인 (CAN FD 여부)
-    fdf_bit = (header_value >> 36) & 0x1
-    result['is_fd'] = bool(fdf_bit)
+    # rx_timeStamp_us_L = ((uint32)buffer[2] >> 1U);
+    # rx_timeStamp_us_L |= ((uint32)buffer[3] << 7U);
+    # rx_timeStamp_us_L |= ((uint32)buffer[4] << 15U);
+    # rx_timeStamp_us_L |= ((uint32)buffer[5] << 23U);
+    # rx_timeStamp_us_L |= (((uint32)buffer[6] & 0x01U) << 31U);
+    result['timestamp_us_l'] = ((buffer[2] >> 1) | 
+                               (buffer[3] << 7) | 
+                               (buffer[4] << 15) | 
+                               (buffer[5] << 23) | 
+                               ((buffer[6] & 0x01) << 31))
     
-    # RTR 비트
-    result['rtr'] = bool((header_value >> 37) & 0x1)
+    # rx_timeStamp_us_H = ((uint32)buffer[6] >> 1U);
+    # rx_timeStamp_us_H |= ((uint32)buffer[7] << 7U);
+    # rx_timeStamp_us_H |= ((uint32)buffer[8] << 15U);
+    # rx_timeStamp_us_H |= ((uint32)buffer[9] << 23U);
+    # rx_timeStamp_us_H |= (((uint32)buffer[10] & 0x01U) << 31U);
+    result['timestamp_us_h'] = ((buffer[6] >> 1) | 
+                               (buffer[7] << 7) | 
+                               (buffer[8] << 15) | 
+                               (buffer[9] << 23) | 
+                               ((buffer[10] & 0x01) << 31))
     
-    # BRS 비트 (CAN FD에서만 사용)
-    result['brs'] = bool((header_value >> 39) & 0x1)
+    # rx_protocol_type = ((buffer[10] & 0x80U) == 0x80U)?1U:0U;
+    result['protocol_type'] = 1 if (buffer[10] & 0x80) == 0x80 else 0
     
-    # CAN ID 추출
-    if result['is_extended']:
-        # Extended ID (29비트)
-        result['can_id'] = (header_value >> 7) & 0x1FFFFFFF
-    else:
-        # Standard ID (11비트)
-        result['can_id'] = (header_value >> 7) & 0x7FF
+    # rx_can_id = lpa_u16add((uint16)buffer[11], ((uint16)buffer[12] & 0x07U) << 8U);
+    result['can_id'] = buffer[11] + ((buffer[12] & 0x07) << 8)
+    
+    # rx_lin_id = (uint16)buffer[11] & 0x3FU;
+    result['lin_id'] = buffer[11] & 0x3F
+    
+    # rx_extCan_id = (uint32)buffer[11];
+    # rx_extCan_id |= ((uint32)buffer[12] << 8U);
+    # rx_extCan_id |= ((uint32)buffer[13] << 16U);
+    # rx_extCan_id |= (((uint32)buffer[14] & 0x1FU) << 24U);
+    result['ext_can_id'] = (buffer[11] | 
+                           (buffer[12] << 8) | 
+                           (buffer[13] << 16) | 
+                           ((buffer[14] & 0x1F) << 24))
+    
+    # rx_fdf = ((buffer[14] & 0x20U) == 0x20U)?1U:0U;
+    result['fdf'] = 1 if (buffer[14] & 0x20) == 0x20 else 0
+    
+    # rx_rtr = ((buffer[14] & 0x40U) == 0x40U)?1U:0U;
+    result['rtr'] = 1 if (buffer[14] & 0x40) == 0x40 else 0
+    
+    # rx_ide = ((buffer[14] & 0x80U) == 0x80U)?1U:0U;
+    result['ide'] = 1 if (buffer[14] & 0x80) == 0x80 else 0
+    
+    # 편의를 위한 boolean 값들
+    result['is_extended'] = bool(result['ide'])
+    result['is_fd'] = bool(result['fdf'])
+    result['is_remote'] = bool(result['rtr'])
     
     return result
 

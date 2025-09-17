@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Run main.py",
+        "type": "python",
+        "request": "launch",
+        "program": "${workspaceFolder}/route-machine/main.py",   // 시작 파일 고정
+        "cwd": "${workspaceFolder}/route-machine",               // 작업 디렉토리
+        "console": "integratedTerminal",           // 터미널에서 실행
+        "justMyCode": true
+      }
+    ]
+  }
+  

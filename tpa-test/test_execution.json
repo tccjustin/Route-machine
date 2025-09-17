@@ -1,0 +1,294 @@
+{
+    "test_execution_config": {
+      "version": "1.0",
+      "description": "TPA 테스트 케이스 실행 설정",
+      "created_date": "2025-01-07",
+      "test_environment": {
+        "tester_1": {
+          "name": "Tester_1",
+          "ip": "100.1.1.1",
+          "mac": "00:00:00:00:11:11",
+          "port": "T1",
+          "speed": "1G"
+        },
+        "tester_2": {
+          "name": "Tester_2", 
+          "ip": "100.1.1.2",
+          "mac": "00:00:00:00:22:22",
+          "port": "T2",
+          "speed": "1G"
+        },
+        "tpa_device": {
+          "name": "TPA",
+          "emac1": {
+            "port": "emac1",
+            "speed": "1G",
+            "connected_to": "T1"
+          },
+          "emac2": {
+            "port": "emac2", 
+            "speed": "1G",
+            "connected_to": "T2"
+          }
+        }
+      }
+    },
+    "test_cases": [
+      {
+        "test_case_id": "PHY-001",
+        "test_name": "1G 포트 Wire-Speed 테스트",
+        "description": "TPA는 1Gbps 대역의 EMAC 2개 포트를 제공해야 하며, 두 포트간 Wire-Speed를 제공해야 한다.",
+        "test_type": "traffic_test",
+        "execution_steps": [
+          {
+            "step": 1,
+            "action": "setup_environment",
+            "description": "테스트 환경 구성",
+            "parameters": {
+              "tester_1_ip": "100.1.1.1",
+              "tester_1_mac": "00:00:00:00:11:11",
+              "tester_2_ip": "100.1.1.2", 
+              "tester_2_mac": "00:00:00:00:22:22",
+              "connection": "T1<->emac1<->emac2<->T2"
+            }
+          },
+          {
+            "step": 2,
+            "action": "start_traffic",
+            "description": "양방향 1G 트래픽 생성 및 전송",
+            "parameters": {
+              "direction_1": {
+                "from": "T1",
+                "to": "T2",
+                "source_mac": "00:00:00:00:11:11",
+                "dest_mac": "00:00:00:00:22:22",
+                "source_ip": "100.1.1.1",
+                "dest_ip": "100.1.1.2",
+                "speed": "1G",
+                "duration": "60s",
+                "load": "100%"
+              },
+              "direction_2": {
+                "from": "T2", 
+                "to": "T1",
+                "source_mac": "00:00:00:00:22:22",
+                "dest_mac": "00:00:00:00:11:11",
+                "source_ip": "100.1.1.2",
+                "dest_ip": "100.1.1.1",
+                "speed": "1G",
+                "duration": "60s",
+                "load": "100%"
+              }
+            }
+          },
+          {
+            "step": 3,
+            "action": "monitor_traffic",
+            "description": "트래픽 모니터링 및 통계 수집",
+            "parameters": {
+              "monitor_duration": "60s",
+              "metrics": [
+                "packets_sent",
+                "packets_received", 
+                "packet_loss",
+                "throughput",
+                "latency",
+                "jitter"
+              ]
+            }
+          },
+          {
+            "step": 4,
+            "action": "verify_results",
+            "description": "결과 검증",
+            "parameters": {
+              "expected_results": {
+                "packet_loss": "0%",
+                "throughput": ">= 1Gbps",
+                "latency": "< 1ms"
+              },
+              "pass_criteria": [
+                "패킷 손실 없이 패킷이 송수신된다",
+                "Wire-Speed 성능 달성"
+              ]
+            }
+          }
+        ],
+        "expected_results": {
+          "packet_loss": "0%",
+          "throughput": "1Gbps",
+          "latency": "< 1ms",
+          "description": "패킷 손실 없이 패킷이 송수신된다"
+        },
+        "test_commands": {
+          "tester_1_commands": [
+            "configure interface T1 speed 1G",
+            "configure interface T1 ip 100.1.1.1/24",
+            "configure interface T1 mac 00:00:00:00:11:11",
+            "start traffic from T1 to 100.1.1.2 duration 60s load 100%",
+            "monitor statistics"
+          ],
+          "tester_2_commands": [
+            "configure interface T2 speed 1G", 
+            "configure interface T2 ip 100.1.1.2/24",
+            "configure interface T2 mac 00:00:00:00:22:22",
+            "start traffic from T2 to 100.1.1.1 duration 60s load 100%",
+            "monitor statistics"
+          ],
+          "tpa_commands": [
+            "configure emac1 speed 1G",
+            "configure emac2 speed 1G", 
+            "enable switching between emac1 and emac2",
+            "monitor port statistics"
+          ]
+        },
+        "validation_script": {
+          "script_type": "python",
+          "script_content": "def validate_phy001_results(traffic_stats):\n    # 패킷 손실 검증\n    if traffic_stats['packet_loss'] > 0:\n        return False, f\"패킷 손실 발생: {traffic_stats['packet_loss']}%\"\n    \n    # 처리량 검증\n    if traffic_stats['throughput'] < 0.95:  # 95% 이상\n        return False, f\"처리량 부족: {traffic_stats['throughput']}Gbps\"\n    \n    # 지연시간 검증\n    if traffic_stats['latency'] > 1:  # 1ms 이하\n        return False, f\"지연시간 초과: {traffic_stats['latency']}ms\"\n    \n    return True, \"모든 검증 통과\""
+        }
+      },
+      {
+        "test_case_id": "JFR-001",
+        "test_name": "Jumbo Frame 포워딩 테스트",
+        "description": "목적지 포트로 오류 없이 포워딩 할 수 있어야 한다. 4000byte Jumbo Frame을 사용하여 테스트한다.",
+        "test_type": "jumbo_frame_test",
+        "execution_steps": [
+          {
+            "step": 1,
+            "action": "setup_environment",
+            "description": "테스트 환경 구성",
+            "parameters": {
+              "tester_1_ip": "100.1.1.1",
+              "tester_1_mac": "00:00:00:00:11:11",
+              "tester_2_ip": "100.1.1.2", 
+              "tester_2_mac": "00:00:00:00:22:22",
+              "connection": "T1<->emac1<->emac2<->T2",
+              "jumbo_frame_size": 4000
+            }
+          },
+          {
+            "step": 2,
+            "action": "configure_jumbo_frame",
+            "description": "Jumbo Frame 설정",
+            "parameters": {
+              "frame_size": 4000,
+              "enable_jumbo_frame": true,
+              "mtu_size": 4000
+            }
+          },
+          {
+            "step": 3,
+            "action": "start_jumbo_traffic",
+            "description": "4000byte Jumbo Frame 트래픽 생성 및 전송",
+            "parameters": {
+              "direction_1": {
+                "from": "T1",
+                "to": "T2",
+                "source_mac": "00:00:00:00:11:11",
+                "dest_mac": "00:00:00:00:22:22",
+                "source_ip": "100.1.1.1",
+                "dest_ip": "100.1.1.2",
+                "frame_size": 4000,
+                "duration": "60s",
+                "load": "100%"
+              },
+              "direction_2": {
+                "from": "T2", 
+                "to": "T1",
+                "source_mac": "00:00:00:00:22:22",
+                "dest_mac": "00:00:00:00:11:11",
+                "source_ip": "100.1.1.2",
+                "dest_ip": "100.1.1.1",
+                "frame_size": 4000,
+                "duration": "60s",
+                "load": "100%"
+              }
+            }
+          },
+          {
+            "step": 4,
+            "action": "monitor_jumbo_traffic",
+            "description": "Jumbo Frame 트래픽 모니터링 및 통계 수집",
+            "parameters": {
+              "monitor_duration": "60s",
+              "metrics": [
+                "jumbo_packets_sent",
+                "jumbo_packets_received", 
+                "jumbo_packet_loss",
+                "jumbo_throughput",
+                "jumbo_latency",
+                "frame_integrity"
+              ]
+            }
+          },
+          {
+            "step": 5,
+            "action": "verify_jumbo_results",
+            "description": "Jumbo Frame 결과 검증",
+            "parameters": {
+              "expected_results": {
+                "packet_loss": "0%",
+                "frame_integrity": "100%",
+                "forwarding_success": "100%"
+              },
+              "pass_criteria": [
+                "Jumbo Frame이 올바르게 포워딩된다",
+                "패킷 손실 없이 전송된다",
+                "프레임 무결성이 유지된다"
+              ]
+            }
+          }
+        ],
+        "expected_results": {
+          "packet_loss": "0%",
+          "frame_integrity": "100%",
+          "forwarding_success": "100%",
+          "description": "Tester_1,2로 올바르게 forwarding 된다"
+        },
+        "test_commands": {
+          "tester_1_commands": [
+            "configure interface T1 speed 1G",
+            "configure interface T1 ip 100.1.1.1/24",
+            "configure interface T1 mac 00:00:00:00:11:11",
+            "configure interface T1 mtu 4000",
+            "enable jumbo frame support",
+            "start jumbo traffic from T1 to 100.1.1.2 frame_size 4000 duration 60s load 100%",
+            "monitor jumbo statistics"
+          ],
+          "tester_2_commands": [
+            "configure interface T2 speed 1G", 
+            "configure interface T2 ip 100.1.1.2/24",
+            "configure interface T2 mac 00:00:00:00:22:22",
+            "configure interface T2 mtu 4000",
+            "enable jumbo frame support",
+            "start jumbo traffic from T2 to 100.1.1.1 frame_size 4000 duration 60s load 100%",
+            "monitor jumbo statistics"
+          ],
+          "tpa_commands": [
+            "configure emac1 speed 1G",
+            "configure emac2 speed 1G",
+            "configure emac1 jumbo frame support",
+            "configure emac2 jumbo frame support",
+            "enable switching between emac1 and emac2",
+            "monitor jumbo port statistics"
+          ]
+        },
+        "validation_script": {
+          "script_type": "python",
+          "script_content": "def validate_jfr001_results(traffic_stats):\n    # Jumbo Frame 패킷 손실 검증\n    if traffic_stats['jumbo_packet_loss'] > 0:\n        return False, f\"Jumbo Frame 패킷 손실 발생: {traffic_stats['jumbo_packet_loss']}%\"\n    \n    # 프레임 무결성 검증\n    if traffic_stats['frame_integrity'] < 100:\n        return False, f\"프레임 무결성 손상: {traffic_stats['frame_integrity']}%\"\n    \n    # 포워딩 성공률 검증\n    if traffic_stats['forwarding_success'] < 100:\n        return False, f\"포워딩 실패: {traffic_stats['forwarding_success']}%\"\n    \n    # Jumbo Frame 크기 검증\n    if traffic_stats['received_frame_size'] != 4000:\n        return False, f\"수신된 프레임 크기 불일치: {traffic_stats['received_frame_size']}byte\"\n    \n    return True, \"Jumbo Frame 테스트 모든 검증 통과\""
+        }
+      }
+    ],
+    "test_execution_engine": {
+      "engine_type": "automated",
+      "supported_protocols": ["TCP", "UDP", "ICMP"],
+      "supported_traffic_types": ["unicast", "multicast", "broadcast"],
+      "monitoring_capabilities": [
+        "real_time_statistics",
+        "packet_capture", 
+        "performance_metrics",
+        "error_detection"
+      ]
+    }
+  }
+  

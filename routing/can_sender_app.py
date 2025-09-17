@@ -191,10 +191,93 @@ def can_sender_app():
 
         test_start_ns = 0
         accumulated_cycle_time_sec = 0
+        
+        # 데이터 검증을 위한 변수들
+        validation_results = []
+        validation_lock = threading.Lock()
+        send_timestamps = {}  # 송신 시간 기록용
+        send_timestamps_lock = threading.Lock()
+
+        def validate_received_data(received_data, rx_frame_info, recv_time_ns):
+            """수신된 데이터를 CSV의 예상 데이터와 비교하여 검증"""
+            try:
+                # 수신된 데이터에서 정보 추출
+                received_port = rx_frame_info['source_port']
+                received_can_id = rx_frame_info['can_id'] if not rx_frame_info['is_extended'] else rx_frame_info['ext_can_id']
+                received_payload = received_data
+                
+                # 송신 데이터와 매칭되는 항목 찾기
+                best_match = None
+                min_time_diff = float('inf')
+                
+                with send_timestamps_lock:
+                    for idx, send_info in send_timestamps.items():
+                        # CAN ID와 포트가 일치하는지 확인
+                        if send_info['can_id'] == received_can_id:
+#                        and send_info['port'] == received_port
+
+                            
+                            # 시간 차이 계산 (가장 가까운 송신 시간 찾기)
+                            time_diff = abs(recv_time_ns - send_info['send_time_ns'])
+                            if time_diff < min_time_diff:
+                                min_time_diff = time_diff
+                                best_match = (idx, send_info)
+                
+                if best_match is None:
+                    return {
+                        'valid': False,
+                        'reason': '매칭되는 송신 데이터를 찾을 수 없음',
+                        'received_port': received_port,
+                        'received_can_id': f"0x{received_can_id:X}",
+                        'received_payload': received_payload.hex()
+                    }
+                
+                idx, send_info = best_match
+                delay_ms = min_time_diff / 1_000_000
+                
+                # 예상 데이터와 비교
+                expected_data_hex = send_info['expected_data']
+                if expected_data_hex.startswith('0x'):
+                    expected_data = bytes.fromhex(expected_data_hex[2:])
+                else:
+                    expected_data = expected_data_hex.encode('utf-8')
+                
+                # 데이터 검증
+                data_match = received_payload == expected_data
+                port_match = received_port == send_info['expected_dst_port']
+                can_id_match = received_can_id == send_info['can_id']
+                
+                validation_result = {
+                    'valid': data_match and port_match and can_id_match,
+                    'send_index': idx,
+                    'delay_ms': delay_ms,
+                    'received_port': received_port,
+                    'expected_port': send_info['expected_dst_port'],
+                    'received_can_id': f"0x{received_can_id:X}",
+                    'expected_can_id': f"0x{send_info['can_id']:X}",
+                    'received_payload': received_payload.hex(),
+                    'expected_payload': expected_data.hex(),
+                    'data_match': data_match,
+                    'port_match': port_match,
+                    'can_id_match': can_id_match,
+                    'expected_msg_id': send_info['expected_msg_id'],
+                    'expected_cycle_time': send_info['expected_cycle_time']
+                }
+                
+                return validation_result
+                
+            except Exception as e:
+                return {
+                    'valid': False,
+                    'reason': f'검증 중 오류 발생: {e}',
+                    'received_port': received_port if 'received_port' in locals() else 'unknown',
+                    'received_can_id': f"0x{received_can_id:X}" if 'received_can_id' in locals() else 'unknown',
+                    'received_payload': received_payload.hex() if 'received_payload' in locals() else 'unknown'
+                }
 
         def sender_thread():
             """CAN 데이터 송신 스레드"""
-            nonlocal stop_event, send_completed, test_start_ns, accumulated_cycle_time_sec
+            nonlocal stop_event, send_completed, test_start_ns, accumulated_cycle_time_sec, send_timestamps
             
             print(f"[송신 스레드] 시작 - Thread ID: {threading.current_thread().ident}")
             print("[송신 스레드] 데이터 전송을 시작합니다...")
@@ -226,7 +309,6 @@ def can_sender_app():
                         if firstflag == 0:
                             firstflag = 1
                             test_start_ns = send_start_ts.tv_sec * 1_000_000_000 + send_start_ts.tv_nsec
-                            continue
 
                         # LPA 패킷 생성 (CAN 헤더 포함)
                         packet = make_lpa_packet_with_can_header(
@@ -251,6 +333,19 @@ def can_sender_app():
                         send_time_ns = send_end_ns - send_start_ns
                         send_time_ms = send_time_ns / 1_000_000
                         relative_time_ms = (send_start_ns - test_start_ns) / 1_000_000
+                        
+                        # 송신 시간 기록 (검증용)
+                        with send_timestamps_lock:
+                            send_timestamps[idx] = {
+                                'send_time_ns': send_end_ns,
+                                'can_id': item['can_id'],
+                                'port': item['port_n'],
+                                'data': item['data'],
+                                'expected_dst_port': item['dst_port_n'],
+                                'expected_data': item['row_data']['rsv_msg'],
+                                'expected_msg_id': item['row_data']['rsv_msg_id'],
+                                'expected_cycle_time': item['row_data']['rsv_cycle_time']
+                            }
 
                         accumulated_cycle_time_sec += item['cycle_time']
                         sleep_time = accumulated_cycle_time_sec - (send_time_ms + relative_time_ms)/1000.0
@@ -265,9 +360,6 @@ def can_sender_app():
                               f"대기시간: {(send_time_ms + relative_time_ms)/1000:.3f}초"
                             f"sleep_time: {sleep_time:.3f}초"
                               )
-                        
-                        
-
 
                         # CycleTime만큼 대기
                         # time.sleep(item['cycle_time'])
@@ -285,7 +377,7 @@ def can_sender_app():
 
         def receiver_thread():
             """CAN 데이터 수신 스레드"""
-            nonlocal stop_event, received_count, received_lock, send_completed, test_start_ns
+            nonlocal stop_event, received_count, received_lock, send_completed, test_start_ns, validation_results, send_timestamps
             
             print(f"[수신 스레드] 시작 - Thread ID: {threading.current_thread().ident}")
             print("[수신 스레드] 수신 대기 시작...")
@@ -342,8 +434,15 @@ def can_sender_app():
                         # LPA 패킷 파싱 시도
                         parsed = parse_lpa_packet_with_can_header(data)
                         if parsed['valid']:
-                            # CAN 헤더 상세 파싱
-                            can_info = parse_can_header(parsed['can_header'])
+                            # 수신 프레임 헤더 파싱 (15바이트)
+                            rx_frame_info = parse_can_header(parsed['can_header'])
+                            
+                            # 데이터 검증 수행
+                            validation_result = validate_received_data(parsed['payload'], rx_frame_info, recv_end_ns)
+                            
+                            # 검증 결과 저장
+                            with validation_lock:
+                                validation_results.append(validation_result)
                             
                             print(f"[수신 스레드] 패킷 {current_count:3d}: {len(data)}바이트 | "
                                   f"수신시간: {recv_time_ms:.3f}ms | "
@@ -352,12 +451,51 @@ def can_sender_app():
                                   f"상대시간: {relative_time_ms:.3f}ms")
                             print(f"  ✓ LPA 패킷 파싱 성공!")
                             print(f"  CMD: 0x{parsed['cmd']:04x}, Port: {parsed['port']}")
-                            print(f"  CAN ID: 0x{can_info['can_id']:X} ({'Extended' if can_info['is_extended'] else 'Standard'})")
-                            print(f"  CAN FD: {can_info['is_fd']}, RTR: {can_info['rtr']}, BRS: {can_info['brs']}")
-                            print(f"  CAN 헤더: {parsed['can_header'].hex()}")
-                            print(f"  실제 Payload: {parsed['payload'].hex()}")
                             print(f"  CRC: 0x{parsed['crc']:04x} ({'유효' if parsed['crc_valid'] else '무효'})")
+                            print(f"  --- 수신 프레임 정보 ---")
+                            print(f"  프레임 타입: {rx_frame_info['frame_type']}")
+                            print(f"  소스 포트: {rx_frame_info['source_port']}")
+                            print(f"  타임스탬프 (ns): {rx_frame_info['timestamp_ns']}")
+                            print(f"  타임스탬프 (us): {rx_frame_info['timestamp_us_h']:08x}{rx_frame_info['timestamp_us_l']:08x}")
+                            print(f"  프로토콜 타입: {rx_frame_info['protocol_type']}")
+                            if rx_frame_info['is_extended']:
+                                print(f"  Extended CAN ID: 0x{rx_frame_info['ext_can_id']:08X}")
+                            else:
+                                print(f"  Standard CAN ID: 0x{rx_frame_info['can_id']:03X}")
+                            print(f"  LIN ID: {rx_frame_info['lin_id']}")
+                            print(f"  CAN FD: {rx_frame_info['is_fd']}, RTR: {rx_frame_info['is_remote']}")
+                            print(f"  --- 진짜 Payload ---")
+                            print(f"  실제 CAN 데이터: {parsed['payload'].hex()}")
+                            print(f"  Payload 길이: {len(parsed['payload'])}바이트")
                             print(f"  전체 데이터: {data.hex()}")
+                            
+                            # 검증 결과 출력
+                            print(f"  --- 데이터 검증 결과 ---")
+                            if validation_result['valid']:
+                                print(f"  ✅ 검증 성공!")
+                                print(f"  송신 인덱스: {validation_result['send_index']}")
+                                print(f"  지연 시간: {validation_result['delay_ms']:.3f}ms")
+                                print(f"  예상 포트: {validation_result['expected_port']} ✓")
+                                print(f"  예상 CAN ID: {validation_result['expected_can_id']} ✓")
+                                print(f"  예상 데이터: {validation_result['expected_payload']} ✓")
+                                print(f"  예상 메시지 ID: {validation_result['expected_msg_id']}")
+                                print(f"  예상 주기: {validation_result['expected_cycle_time']}ms")
+                            else:
+                                print(f"  ❌ 검증 실패!")
+                                if 'reason' in validation_result:
+                                    print(f"  실패 이유: {validation_result['reason']}")
+                                else:
+                                    print(f"  포트 매칭: {'✓' if validation_result.get('port_match', False) else '✗'}")
+                                    print(f"  CAN ID 매칭: {'✓' if validation_result.get('can_id_match', False) else '✗'}")
+                                    print(f"  데이터 매칭: {'✓' if validation_result.get('data_match', False) else '✗'}")
+                                    print(f"  수신 포트: {validation_result.get('received_port', 'unknown')}")
+                                    print(f"  예상 포트: {validation_result.get('expected_port', 'unknown')}")
+                                    print(f"  수신 CAN ID: {validation_result.get('received_can_id', 'unknown')}")
+                                    print(f"  예상 CAN ID: {validation_result.get('expected_can_id', 'unknown')}")
+                                    print(f"  수신 데이터: {validation_result.get('received_payload', 'unknown')}")
+                                    print(f"  예상 데이터: {validation_result.get('expected_payload', 'unknown')}")
+                                    if 'delay_ms' in validation_result:
+                                        print(f"  지연 시간: {validation_result['delay_ms']:.3f}ms")
                         else:
                             # 파싱 실패 시 기존 방식으로 출력
                             print(f"[수신 스레드] 패킷 {current_count:3d}: {len(data)}바이트 | "
@@ -404,6 +542,42 @@ def can_sender_app():
             print("\nCtrl+C 감지됨. 프로그램을 종료합니다...")
             stop_event.set()
             receiver.join(timeout=2)
+            
+            # 검증 통계 출력
+            print(f"\n=== 데이터 검증 통계 ===")
+            with validation_lock:
+                total_validations = len(validation_results)
+                successful_validations = sum(1 for v in validation_results if v['valid'])
+                failed_validations = total_validations - successful_validations
+                
+                print(f"총 검증된 패킷: {total_validations}개")
+                print(f"검증 성공: {successful_validations}개 ({successful_validations/total_validations*100:.1f}%)")
+                print(f"검증 실패: {failed_validations}개 ({failed_validations/total_validations*100:.1f}%)")
+                
+                if successful_validations > 0:
+                    delays = [v['delay_ms'] for v in validation_results if v['valid'] and 'delay_ms' in v]
+                    if delays:
+                        avg_delay = sum(delays) / len(delays)
+                        min_delay = min(delays)
+                        max_delay = max(delays)
+                        print(f"지연 시간 통계:")
+                        print(f"  평균: {avg_delay:.3f}ms")
+                        print(f"  최소: {min_delay:.3f}ms")
+                        print(f"  최대: {max_delay:.3f}ms")
+                
+                # 실패한 검증 상세 정보
+                if failed_validations > 0:
+                    print(f"\n=== 검증 실패 상세 정보 ===")
+                    for i, result in enumerate(validation_results):
+                        if not result['valid']:
+                            print(f"실패 #{i+1}:")
+                            if 'reason' in result:
+                                print(f"  이유: {result['reason']}")
+                            else:
+                                print(f"  포트: {result.get('received_port', 'unknown')} vs {result.get('expected_port', 'unknown')}")
+                                print(f"  CAN ID: {result.get('received_can_id', 'unknown')} vs {result.get('expected_can_id', 'unknown')}")
+                                print(f"  데이터: {result.get('received_payload', 'unknown')} vs {result.get('expected_payload', 'unknown')}")
+            
             print(f"멀티스레딩 애플리케이션 완료! 전송: {len(csv_data)}개, 수신: {received_count}개")
         finally:
             # IPC 디바이스 정리
